@@ -1,0 +1,73 @@
+#include <stdio.h>
+#include <sys/ptrace.h>
+#include <sys/wait.h>
+#include <sys/user.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <stdlib.h>
+
+
+const char* syscall_names[] = {
+    "read", "write", "open", "close", "waitpid", "creat", "link", "unlink",
+    "execve", "chdir", "time", "mknod", "chmod", "lchown", "break", "oldstat",
+    "lseek", "getpid", "mount", "umount", "setuid", "getuid", "stime", "ptrace",
+    "alarm", "oldfstat", "pause", "utime", "stty", "gtty", "access", "nice",
+    "ftime", "sync", "kill", "rename", "mkdir", "rmdir", "dup", "pipe", "times",
+    "brk", "setgid", "getgid", "signal", "geteuid", "getegid", "acct", "umount2",
+    "lock", "ioctl", "fcntl", "mpx", "setpgid", "ulimit", "oldolduname", "umask",
+    "chroot", "ustat", "dup2", "getppid", "getpgrp", "setsid", "sigaction", "sgetmask",
+    "ssetmask", "setreuid", "setregid", "sigsuspend", "sigpending", "sethostname",
+    "setrlimit", "getrlimit", "getrusage", "gettimeofday", "settimeofday", "getgroups",
+    "setgroups", "select", "symlink"
+};
+
+int main(int argc, char *argv[]) {
+    if (argc != 2) {
+        printf("Usage: %s <target_program>\n", argv[0]);
+        return 1;
+    }
+
+    pid_t child_pid = fork();
+
+    if (child_pid < 0) {
+        perror("fork failed");
+        return 1;
+    }
+
+    if (child_pid == 0) {
+        // Child process
+        ptrace(PTRACE_TRACEME, 0, NULL, NULL);
+        execl(argv[1], argv[1], (char *)NULL);
+        perror("execl failed"); // if execl fails
+        return 1;
+    } else {
+        // Parent process - tracer
+        struct user_regs_struct regs;
+        int status;
+        int syscall_count = sizeof(syscall_names) / sizeof(syscall_names[0]);
+
+        waitpid(child_pid, &status, 0);
+        ptrace(PTRACE_SYSCALL, child_pid, NULL, NULL);
+
+        while (1) {
+            waitpid(child_pid, &status, 0);
+            if (WIFEXITED(status)) break;
+
+            ptrace(PTRACE_GETREGS, child_pid, NULL, &regs);
+
+            // Check if a valid system call was made
+            if (regs.orig_rax >= 0 && regs.orig_rax < syscall_count) {
+                printf("Traced system call: %s\n", syscall_names[regs.orig_rax]);
+            } else {
+                printf("Traced unknown system call: %lld\n", regs.orig_rax);
+            }
+
+            ptrace(PTRACE_SYSCALL, child_pid, NULL, NULL);
+        }
+
+        ptrace(PTRACE_DETACH, child_pid, NULL, NULL);
+    }
+
+    return 0;
+}
